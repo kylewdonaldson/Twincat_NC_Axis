@@ -1,0 +1,26 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.4">
+  <POU Name="FB_Blinker" Id="{092761fc-1b18-48a1-9383-71c4cc0886e6}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Blinker
+VAR_INPUT
+	Period	: TIME;
+END_VAR
+VAR_OUTPUT
+	Output	: BOOL;
+	fET		: LREAL;
+END_VAR
+VAR
+	Timer1: TON;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[Timer1(In := NOT Timer1.Q, PT := Period);
+Output	:= Period/2 > Timer1.ET;
+fET		:= TIME_TO_LREAL(Timer1.ET);]]></ST>
+    </Implementation>
+    <LineIds Name="FB_Blinker">
+      <LineId Id="77" Count="1" />
+      <LineId Id="45" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

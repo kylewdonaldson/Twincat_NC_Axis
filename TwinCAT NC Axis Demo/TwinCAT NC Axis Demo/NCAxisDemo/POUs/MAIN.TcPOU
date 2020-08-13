@@ -1,0 +1,83 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.4">
+  <POU Name="MAIN" Id="{19241157-38e8-4d68-b071-e8d2feb49830}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+
+	stAxisRef	: AXIS_REF;		// Axis reference for our demo motion axis
+	fbAxis		: FB_Axis;		// Instance of our axis management FB
+
+	// Axis state outputs
+	bAxisReady	: BOOL;			// Set when the axis is enable and ready for motion 
+	bError		: BOOL;			// Set when the axis or the internal MC functions have an error
+
+	
+	// Bools to activate different tests
+	bTestEnable	: BOOL;			// Set to enable the axis 
+	bTestDisable: BOOL;			// Set to disable the axis 
+	bTestReset	: BOOL;			// Set to reset the axis 
+	bTestRecal	: BOOL;			// Set to reset the axis position
+	bTestStop	: BOOL;			// Set to perform a blocking stop on the axis 
+	bTestDynamicVelocity: BOOL;	// Test sending a dynamically updating target speed to the axis 
+	
+	
+	fbBlinker	: FB_Blinker;	// Used to generate a changing velocity signal for the test
+
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// We run the axis managment FB every cycle
+fbAxis(	AxisRef		:= stAxisRef,
+		bAxisReady	=>bAxisReady,
+		bError		=> bError);
+
+// Also run the blinker to generate a target velocity signal	
+fbBlinker(Period	:= T#2S);
+
+// Run different tests of the Axis Management FB functionality.
+	
+IF(bTestEnable)THEN
+	bTestEnable:=FALSE;
+	fbAxis.Enable();
+END_IF
+
+IF(bTestDisable)THEN
+	bTestDisable:=FALSE;
+	fbAxis.Disable();
+END_IF
+
+IF(bTestReset)THEN
+	bTestReset:=FALSE;
+	fbAxis.Reset();
+END_IF
+
+IF(bTestRecal)THEN
+	bTestRecal:=FALSE;
+	fbAxis.ResetPosition(fPosition:=100);
+END_IF
+
+IF(bTestStop)THEN
+	bTestStop:=FALSE;
+	fbAxis.Stop();
+END_IF
+
+// Test Dynamic velocity
+IF(bTestDynamicVelocity) THEN
+	fbAxis.DynamicVelocity(fVelocity:=fbBlinker.fET);
+END_IF
+]]></ST>
+    </Implementation>
+    <LineIds Name="MAIN">
+      <LineId Id="78" Count="0" />
+      <LineId Id="24" Count="2" />
+      <LineId Id="79" Count="0" />
+      <LineId Id="27" Count="1" />
+      <LineId Id="81" Count="0" />
+      <LineId Id="80" Count="0" />
+      <LineId Id="29" Count="27" />
+      <LineId Id="82" Count="0" />
+      <LineId Id="66" Count="0" />
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

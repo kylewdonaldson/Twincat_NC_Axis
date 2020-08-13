@@ -1,0 +1,463 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.4">
+  <POU Name="FB_Axis" Id="{a7595f3e-0067-4b32-bbdd-698f783f05a3}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Axis
+VAR_INPUT
+END_VAR
+VAR_IN_OUT
+	AxisRef	: AXIS_REF;
+END_VAR
+VAR_OUTPUT
+	bDynamicVelocityActive	: BOOL;
+	bAxisReady				: BOOL;
+	bError					: BOOL;
+END_VAR
+VAR
+	//AxisRef		: AXIS_REF;
+
+	bReset			: BOOL;			// Rising edge triggers  reset 
+	bReCalibrate	: BOOL;			// Rising edge triggers axis position reset 
+	fCalPosition	: LREAL;		// The calibration position
+	bPowerOn		: BOOL;			// Enable, keep high for axis enable
+	bNotFastDisable	: BOOL	:= TRUE;// Used for the hard fault disable
+	bDelayPowerOff	: BOOL;			// Used for controlled axis stop.
+	bStopAxis		: BOOL;			// Used for controlled axis stop
+
+	
+	fbReadAxisParam		: MC_ReadParameter;	// FB to get axis max Decel
+	fAxisMaxDec			: LREAL;	// The max axis Deceleration, read from the axis config
+
+	// Motion axis functions
+	McPower	: MC_Power;
+	McReset	: MC_Reset;
+	McHome	: MC_Home;
+	
+	// Edge detection 
+	fbReCalibrate			: TP;
+	fbExtReset				: TP;
+	fbGetAxisParam			: TP;
+	fbFallingExtResetQ		: F_TRIG;
+	fbFallingRecalibrateQ	: F_TRIG;
+	fbFallingPowerOn		: F_TRIG;
+	fbRisingMcPowerStatus	: R_TRIG;
+	fbRisingMcResetDone		: R_TRIG;
+	fbRisingMcHomeDone		: R_TRIG;
+	fbRisingStopDone		: R_TRIG;
+	fbRisingHaltDone		: R_TRIG;
+	fbRisingPowerON			: R_TRIG;
+	
+	// Distinguish between standard home and special home
+	iHomeSource	: INT	:= 1; // 1 for startup home, 2 for other home function 
+	
+	// Dynamic velocity
+	fDynamicVelo			: LREAL;
+	fbFallingDynamicVelocity: F_TRIG;
+	bPhase					: BOOL;
+	bDvHeartBeat			: BOOL;
+	bDelayHaltDisable		: BOOL;
+	bBlockDynamicVelocity	: BOOL;
+	McMoveVelocity_A		: MC_MoveVelocity;
+	McMoveVelocity_B		: MC_MoveVelocity;
+	McHalt					: MC_Halt;
+	McStop					: MC_Stop;
+	
+	eMotionDirection		: MC_Direction;
+	
+	
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Run edge detection FB's (AXIS MANAGENEMT) 
+fbRisingMcPowerStatus(CLK:=McPower.Status);
+fbRisingPowerON(CLK:=bPowerOn);
+fbRisingMcResetDone(CLK:=McReset.Done);
+fbRisingMcHomeDone(CLK:=McHome.Done);
+fbExtReset(IN:=bReset,PT:=T#2MS);
+fbFallingExtResetQ(CLK:=fbExtReset.Q);
+fbReCalibrate(IN:=bReCalibrate,PT:=T#2MS);
+fbFallingRecalibrateQ(CLK:=fbReCalibrate.Q);
+fbFallingPowerOn(CLK:=bPowerOn);
+fbGetAxisParam(IN:=fbRisingMcPowerStatus.Q,PT:=T#20MS);
+fbRisingStopDone(CLK:=McStop.Done);
+fbRisingHaltDone(CLK:=McHalt.Done);
+
+// Run edge detection FB's (DYNAMIC VELOCITY) 
+fbFallingDynamicVelocity(CLK:=bDynamicVelocityActive);
+
+// Delay the HALT disable to allow axis to halt when disabling dynamic velocity mode
+IF(fbFallingDynamicVelocity.Q)THEN
+	bDelayHaltDisable	:= TRUE;
+END_IF
+
+IF(fbRisingMcResetDone.Q) THEN
+	bBlockDynamicVelocity	:= FALSE;
+END_IF
+
+
+IF(fbRisingStopDone.Q)THEN
+	bStopAxis		:= FALSE;
+	bDelayPowerOff	:= FALSE;
+END_IF
+
+IF(fbFallingPowerOn.Q)THEN
+	IF(AxisRef.NcToPlc.AxisState <> 0)THEN
+		bStopAxis		:= TRUE;			// trigger a controlled axis stop if the axis is disabled while running a motion
+		bDelayPowerOff	:= TRUE;			// Delay the power off until the axis has come to a stop
+	END_IF
+END_IF
+
+IF(fbFallingExtResetQ.Q)THEN
+	bReset	:= FALSE;
+END_IF
+
+IF(fbFallingRecalibrateQ.Q)THEN
+	bReCalibrate	:= FALSE;
+END_IF
+
+// Read the Max Deceleration from the axis 
+fbReadAxisParam(	Axis			:= AxisRef, 
+					Enable			:= fbGetAxisParam.Q,
+					ParameterNumber	:= MC_AxisParameter.AxisMaximumDeceleration,
+					Value			=> fAxisMaxDec);
+
+//Check for errors 
+IF(	(McPower.Error) OR 
+	(McReset.Error) OR 
+	(McHome.Error)	OR
+	(AxisRef.NcToPlc.ErrorCode <> 0)) THEN
+	
+		bError := TRUE;
+	
+	ELSE
+		bError := FALSE;
+END_IF
+
+// Run MC Power, Reset and Home Functions
+McPower(	Axis			:= AxisRef,
+			Enable			:= (bDelayPowerOff OR bPowerOn) AND bNotFastDisable,
+			Enable_Positive	:= TRUE,
+			Enable_Negative	:= TRUE,
+			Override		:= 100);
+			
+McReset( 	Axis			:= AxisRef,
+			Execute			:= (fbRisingMcPowerStatus.Q OR fbExtReset.Q OR (fbRisingPowerON.Q AND (AxisRef.NcToPlc.ErrorCode <> 0)) ));
+// Home
+CASE iHomeSource OF 
+	1:	
+		// standard start up force calibration 
+		McHome( 	Axis			:= AxisRef,
+					HomingMode		:= MC_HomingMode.MC_ForceCalibration,
+					Execute			:= fbRisingMcResetDone.Q);
+	2: 
+		// recalibration function direct calibration 
+		McHome( 	Axis			:= AxisRef,
+					HomingMode		:= MC_HomingMode.MC_Direct,
+					Position		:= fCalPosition,
+					Execute			:= fbReCalibrate.Q);
+	ELSE
+		iHomeSource	:= 1;
+END_CASE	
+
+
+// Swap back to default home source when home completes
+IF(fbRisingMcHomeDone.Q)THEN
+	iHomeSource	:= 1;
+END_IF	
+
+// Set the output axis ready flag					
+IF(bPowerOn AND fbRisingMcHomeDone.Q AND NOT(bError))THEN
+	bAxisReady	:= TRUE;
+END_IF		
+
+// Reset the output axis ready flag 
+IF(NOT(bPowerOn) OR bError)THEN
+	bAxisReady	:= FALSE;	
+END_IF
+
+
+
+// Dynamic Velocity Implementation
+IF(bDynamicVelocityActive AND NOT(bBlockDynamicVelocity)) THEN
+	
+	bPhase	:= NOT(bPhase);	// Phase alternator to allow continuous target velocity updates
+	
+	McMoveVelocity_A( 	Axis			:= AxisRef,
+						Execute			:= (bPhase AND (fDynamicVelo <> 0) AND bPowerOn),
+						Direction		:= eMotionDirection,
+						Velocity		:= ABS(fDynamicVelo));
+	
+	McMoveVelocity_B( 	Axis			:= AxisRef,
+						Execute			:= (NOT(bPhase) AND (fDynamicVelo <> 0) AND bPowerOn),
+						Direction		:= eMotionDirection,
+						Velocity		:= ABS(fDynamicVelo));
+	
+	
+	// Run a heartbeat to disablle dynamic velocity as soon as the user stops updating it					
+	IF(NOT(bDvHeartBeat))THEN
+		bDynamicVelocityActive	:= FALSE;
+	END_IF
+	
+	// Reset the dynamic velocity active state
+	bDvHeartBeat	:= FALSE;
+	
+						
+END_IF 
+
+IF(bDynamicVelocityActive OR bDelayHaltDisable) THEN
+	// This is used for dynamic velocity mode 
+	McHalt			(	Axis			:= AxisRef,
+						Deceleration	:= fAxisMaxDec,
+						Execute			:= ((fDynamicVelo = 0) AND bPowerOn) OR fbFallingDynamicVelocity.Q);
+	
+	// reset bDelay halt disable when the halt function completes 
+	IF(fbRisingHaltDone.Q)THEN
+		bDelayHaltDisable	:= FALSE;
+	END_IF
+						
+END_IF
+
+// Implement a max dec controller axis Stop if the axis is disabled while running a motion
+McStop			(	Axis			:= AxisRef,
+					Deceleration	:= fAxisMaxDec,
+					Execute			:= bStopAxis);
+
+
+
+
+
+
+
+
+]]></ST>
+    </Implementation>
+    <Method Name="Disable" Id="{294c13ee-21ce-4669-8734-54682c297951}">
+      <Declaration><![CDATA[METHOD Disable : BOOL // Disbales the axis after stopping the axis as fast as possible , graceful stop 
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[THIS^.bPowerOn				:= FALSE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="DynamicVelocity" Id="{c8e45f90-edb1-4f0d-aa08-b06cd416349c}">
+      <Declaration><![CDATA[METHOD DynamicVelocity : BOOL
+VAR_INPUT
+	fVelocity	: LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF(THIS^.bAxisReady) THEN 
+	IF(NOT(bDynamicVelocityActive)) THEN THIS^.bDynamicVelocityActive := TRUE; END_IF // Assert the dynamic velocity active flag 
+	THIS^.bDvHeartBeat 			:= TRUE;		// Run the dynamic velocity active heartbeat 
+	THIS^.fDynamicVelo			:= fVelocity;	// Update the target velocity
+	IF(fVelocity > 0)THEN
+		THIS^.eMotionDirection	:= MC_Direction.MC_Positive_Direction;
+	ELSE
+		THIS^.eMotionDirection	:= MC_Direction.MC_Negative_Direction;
+	END_IF
+END_IF
+
+
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Enable" Id="{232ab3d2-1318-44a2-aacc-890807d715fd}">
+      <Declaration><![CDATA[METHOD Enable : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[THIS^.bPowerOn					:= TRUE;
+THIS^.bNotFastDisable			:= TRUE;
+THIS^.bDynamicVelocityActive	:= FALSE;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="FastDisable" Id="{f44f1294-a5cd-4c09-b324-34aea0f4be2d}">
+      <Declaration><![CDATA[METHOD FastDisable : BOOL	// Disbales the axis immediately, if moving will result in a fault
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[THIS^.bNotFastDisable	:= FALSE;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Reset" Id="{43b0f955-aab6-4669-99ff-7f3fb207acc2}">
+      <Declaration><![CDATA[METHOD Reset : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[THIS^.bReset					:= TRUE;
+THIS^.bDynamicVelocityActive	:= FALSE;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="ResetPosition" Id="{09d8a13e-bdc0-40cc-a7d2-f240d9fe5cc4}">
+      <Declaration><![CDATA[METHOD ResetPosition : BOOL
+VAR_INPUT
+	fPosition	: LREAL; 	// Calibration axis position 
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[bReCalibrate		:= TRUE;
+fCalPosition		:= fPosition;
+THIS^.iHomeSource	:= 2;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Stop" Id="{16bc3a7d-5d9e-48a3-931b-b5dcc481fa28}">
+      <Declaration><![CDATA[METHOD Stop : BOOL
+VAR_INPUT
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[THIS^.bStopAxis					:= TRUE;
+THIS^.bBlockDynamicVelocity		:= TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <LineIds Name="FB_Axis">
+      <LineId Id="9" Count="0" />
+      <LineId Id="58" Count="0" />
+      <LineId Id="518" Count="0" />
+      <LineId Id="60" Count="1" />
+      <LineId Id="105" Count="0" />
+      <LineId Id="119" Count="0" />
+      <LineId Id="159" Count="1" />
+      <LineId Id="449" Count="2" />
+      <LineId Id="501" Count="0" />
+      <LineId Id="455" Count="0" />
+      <LineId Id="453" Count="1" />
+      <LineId Id="514" Count="0" />
+      <LineId Id="513" Count="0" />
+      <LineId Id="509" Count="3" />
+      <LineId Id="508" Count="0" />
+      <LineId Id="516" Count="1" />
+      <LineId Id="447" Count="0" />
+      <LineId Id="452" Count="0" />
+      <LineId Id="354" Count="0" />
+      <LineId Id="367" Count="0" />
+      <LineId Id="356" Count="1" />
+      <LineId Id="345" Count="0" />
+      <LineId Id="344" Count="0" />
+      <LineId Id="346" Count="0" />
+      <LineId Id="358" Count="0" />
+      <LineId Id="482" Count="0" />
+      <LineId Id="349" Count="0" />
+      <LineId Id="347" Count="0" />
+      <LineId Id="122" Count="0" />
+      <LineId Id="172" Count="2" />
+      <LineId Id="178" Count="0" />
+      <LineId Id="175" Count="2" />
+      <LineId Id="320" Count="0" />
+      <LineId Id="310" Count="4" />
+      <LineId Id="333" Count="0" />
+      <LineId Id="92" Count="0" />
+      <LineId Id="91" Count="0" />
+      <LineId Id="93" Count="8" />
+      <LineId Id="456" Count="0" />
+      <LineId Id="63" Count="0" />
+      <LineId Id="62" Count="0" />
+      <LineId Id="65" Count="4" />
+      <LineId Id="79" Count="1" />
+      <LineId Id="248" Count="0" />
+      <LineId Id="247" Count="0" />
+      <LineId Id="249" Count="0" />
+      <LineId Id="83" Count="0" />
+      <LineId Id="81" Count="0" />
+      <LineId Id="155" Count="0" />
+      <LineId Id="82" Count="0" />
+      <LineId Id="250" Count="0" />
+      <LineId Id="168" Count="0" />
+      <LineId Id="166" Count="1" />
+      <LineId Id="169" Count="0" />
+      <LineId Id="163" Count="0" />
+      <LineId Id="252" Count="2" />
+      <LineId Id="457" Count="1" />
+      <LineId Id="256" Count="0" />
+      <LineId Id="255" Count="0" />
+      <LineId Id="258" Count="0" />
+      <LineId Id="257" Count="0" />
+      <LineId Id="459" Count="0" />
+      <LineId Id="85" Count="0" />
+      <LineId Id="87" Count="0" />
+      <LineId Id="89" Count="0" />
+      <LineId Id="88" Count="0" />
+      <LineId Id="460" Count="0" />
+      <LineId Id="107" Count="0" />
+      <LineId Id="106" Count="0" />
+      <LineId Id="109" Count="1" />
+      <LineId Id="461" Count="1" />
+      <LineId Id="191" Count="0" />
+      <LineId Id="190" Count="0" />
+      <LineId Id="465" Count="0" />
+      <LineId Id="467" Count="0" />
+      <LineId Id="229" Count="3" />
+      <LineId Id="519" Count="0" />
+      <LineId Id="233" Count="0" />
+      <LineId Id="237" Count="0" />
+      <LineId Id="234" Count="1" />
+      <LineId Id="521" Count="0" />
+      <LineId Id="236" Count="0" />
+      <LineId Id="464" Count="0" />
+      <LineId Id="468" Count="0" />
+      <LineId Id="473" Count="0" />
+      <LineId Id="471" Count="1" />
+      <LineId Id="469" Count="0" />
+      <LineId Id="474" Count="0" />
+      <LineId Id="476" Count="1" />
+      <LineId Id="495" Count="0" />
+      <LineId Id="470" Count="0" />
+      <LineId Id="466" Count="0" />
+      <LineId Id="480" Count="1" />
+      <LineId Id="490" Count="3" />
+      <LineId Id="502" Count="0" />
+      <LineId Id="507" Count="0" />
+      <LineId Id="506" Count="0" />
+      <LineId Id="504" Count="1" />
+      <LineId Id="503" Count="0" />
+      <LineId Id="488" Count="1" />
+      <LineId Id="479" Count="0" />
+      <LineId Id="363" Count="2" />
+      <LineId Id="261" Count="0" />
+      <LineId Id="339" Count="0" />
+      <LineId Id="342" Count="0" />
+      <LineId Id="325" Count="0" />
+      <LineId Id="443" Count="0" />
+      <LineId Id="264" Count="2" />
+      <LineId Id="56" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Axis.Disable">
+      <LineId Id="6" Count="0" />
+      <LineId Id="10" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Axis.DynamicVelocity">
+      <LineId Id="11" Count="0" />
+      <LineId Id="28" Count="0" />
+      <LineId Id="24" Count="0" />
+      <LineId Id="18" Count="0" />
+      <LineId Id="33" Count="2" />
+      <LineId Id="38" Count="0" />
+      <LineId Id="37" Count="0" />
+      <LineId Id="8" Count="2" />
+      <LineId Id="5" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Axis.Enable">
+      <LineId Id="5" Count="0" />
+      <LineId Id="10" Count="0" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Axis.FastDisable">
+      <LineId Id="9" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Axis.Reset">
+      <LineId Id="5" Count="0" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Axis.ResetPosition">
+      <LineId Id="5" Count="0" />
+      <LineId Id="7" Count="1" />
+    </LineIds>
+    <LineIds Name="FB_Axis.Stop">
+      <LineId Id="5" Count="1" />
+    </LineIds>
+  </POU>
+</TcPlcObject>
