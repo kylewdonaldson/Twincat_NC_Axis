@@ -900,7 +900,7 @@ External Setpoint Generation:
 		</DataType>
 	</DataTypes>
 	<Project GUID="{F2D37104-3A8F-478B-9CD9-AEFF60EC1A9A}" Name="NCAxisDemo" PrjFilePath="..\..\NCAxisDemo\NCAxisDemo.plcproj" TmcFilePath="..\..\NCAxisDemo\NCAxisDemo.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" SymbolicMapping="true">
-		<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2">
+		<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcPath="NCAxisDemo\NCAxisDemo.tmc">
 			<Name>NCAxisDemo Instance</Name>
 			<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 			<Vars VarGrpType="1">

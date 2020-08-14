@@ -8,9 +8,10 @@ VAR_IN_OUT
 	AxisRef	: AXIS_REF;
 END_VAR
 VAR_OUTPUT
-	bDynamicVelocityActive	: BOOL;
-	bAxisReady				: BOOL;
-	bError					: BOOL;
+	bDynamicVelocityActive	: BOOL;	
+	bAxisReady				: BOOL;	// Set when the axis is ready for motion 
+	bAxisMoving				: BOOL;	// Set while the axis is actively positioning 
+	bError					: BOOL;	// When the axis or any of the MC function blocks have an error
 END_VAR
 VAR
 	//AxisRef		: AXIS_REF;
@@ -100,7 +101,7 @@ IF(fbRisingStopDone.Q)THEN
 END_IF
 
 IF(fbFallingPowerOn.Q)THEN
-	IF(AxisRef.NcToPlc.AxisState <> 0)THEN
+	IF(bAxisMoving) THEN
 		bStopAxis		:= TRUE;			// trigger a controlled axis stop if the axis is disabled while running a motion
 		bDelayPowerOff	:= TRUE;			// Delay the power off until the axis has come to a stop
 	END_IF
@@ -112,6 +113,13 @@ END_IF
 
 IF(fbFallingRecalibrateQ.Q)THEN
 	bReCalibrate	:= FALSE;
+END_IF
+
+// Update the axis moving output flag 
+IF(AxisRef.NcToPlc.AxisState <> 0)THEN
+	bAxisMoving		:= TRUE;
+ELSE
+	bAxisMoving		:= FALSE;
 END_IF
 
 // Read the Max Deceleration from the axis 
@@ -347,6 +355,11 @@ THIS^.bBlockDynamicVelocity		:= TRUE;]]></ST>
       <LineId Id="172" Count="2" />
       <LineId Id="178" Count="0" />
       <LineId Id="175" Count="2" />
+      <LineId Id="587" Count="1" />
+      <LineId Id="590" Count="1" />
+      <LineId Id="589" Count="0" />
+      <LineId Id="596" Count="0" />
+      <LineId Id="595" Count="0" />
       <LineId Id="320" Count="0" />
       <LineId Id="310" Count="4" />
       <LineId Id="333" Count="0" />
